@@ -310,6 +310,126 @@ Choose the appropriate metric for your embeddings:
 - **`cosine`** (default): Angular similarity, good for text embeddings
 - **`euclidean`**: L2 distance, for unnormalized embeddings
 - **`dotproduct`**: Dot product, optimal for normalized embeddings (OpenAI, Cohere)
+- **`hamming`**: Hamming distance, for binary vectors (bit type only)
+- **`jaccard`**: Jaccard distance, for binary vectors (bit type only)
+
+### Vector Storage Types (pgvector 0.7.0+)
+
+pgvector 0.7.0+ supports multiple vector storage types for different use cases:
+
+#### Vector (Full Precision) - Default
+
+Standard full-precision floating-point vectors:
+
+```typescript
+await vectorStore.createIndex({
+  indexName: 'my_vectors',
+  dimension: 1536,
+  metric: 'cosine',
+  indexConfig: {
+    type: 'hnsw',
+    vectorType: 'vector', // Default, can be omitted
+  },
+});
+```
+
+- **Best for:** General purpose, maximum accuracy
+- **Storage:** 4 bytes per dimension
+- **Metrics:** cosine, euclidean, dotproduct
+
+#### Halfvec (Half Precision)
+
+Half-precision floating-point vectors for reduced storage:
+
+```typescript
+await vectorStore.createIndex({
+  indexName: 'my_vectors',
+  dimension: 1536,
+  metric: 'cosine',
+  indexConfig: {
+    type: 'hnsw',
+    vectorType: 'halfvec',
+  },
+});
+```
+
+- **Best for:** Large datasets where storage is a concern
+- **Storage:** 2 bytes per dimension (50% reduction)
+- **Metrics:** cosine, euclidean, dotproduct
+- **Accuracy:** Slightly reduced but often negligible for embeddings
+
+#### Bit (Binary Vectors)
+
+Binary vectors using PostgreSQL's native bit type for binary quantization:
+
+```typescript
+await vectorStore.createIndex({
+  indexName: 'binary_vectors',
+  dimension: 1024,
+  metric: 'hamming', // or 'jaccard'
+  indexConfig: {
+    type: 'hnsw', // or 'ivfflat' with hamming only
+    vectorType: 'bit',
+  },
+});
+```
+
+- **Best for:** Binary quantization, extreme storage reduction
+- **Storage:** 1 bit per dimension (97% reduction vs full precision)
+- **Metrics:** hamming, jaccard
+- **Index Support:**
+  - **HNSW**: Supports both hamming and jaccard
+  - **IVFFlat**: Supports hamming only
+  - **Flat**: Supports both metrics
+- **Limits:** Up to 64,000 dimensions for indexed vectors
+
+**Use Cases:**
+- Binary embeddings from models like BinaryBERT
+- Extreme storage optimization for large-scale systems
+- Fast approximate search with binary quantization
+
+#### Sparsevec (Sparse Vectors)
+
+Sparse vectors that only store non-zero elements:
+
+```typescript
+await vectorStore.createIndex({
+  indexName: 'sparse_vectors',
+  dimension: 1000, // Max non-zero elements
+  metric: 'cosine',
+  indexConfig: {
+    type: 'hnsw', // IVFFlat not supported
+    vectorType: 'sparsevec',
+  },
+});
+```
+
+- **Best for:** BM25, TF-IDF, sparse embeddings
+- **Storage:** Only non-zero values stored
+- **Metrics:** cosine, euclidean, dotproduct
+- **Index Support:**
+  - **HNSW**: Fully supported
+  - **IVFFlat**: Not supported
+  - **Flat**: Supported
+- **Limits:** Up to 1,000 non-zero elements for indexed vectors
+
+**Use Cases:**
+- BM25/TF-IDF representations
+- Sparse embeddings from models
+- Hybrid search combining dense and sparse vectors
+
+### Vector Type Comparison
+
+| Type       | Storage per dim | Metrics                          | Index Support    | Best For                    |
+|------------|-----------------|----------------------------------|------------------|-----------------------------|
+| vector     | 4 bytes         | cosine, euclidean, dotproduct    | All              | General purpose, max accuracy|
+| halfvec    | 2 bytes         | cosine, euclidean, dotproduct    | All              | Storage optimization        |
+| bit        | 1 bit           | hamming, jaccard                 | HNSW, IVFFlat*   | Binary quantization         |
+| sparsevec  | Variable        | cosine, euclidean, dotproduct    | HNSW, Flat       | Sparse embeddings, BM25     |
+
+*IVFFlat only supports hamming distance for bit vectors
+
+
 
 ### Index Recreation
 

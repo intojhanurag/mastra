@@ -22,10 +22,11 @@ import type { PgVectorConfig } from '../shared/config';
 import { PGFilterTranslator } from './filter';
 import type { PGVectorFilter } from './filter';
 import { buildFilterQuery, buildDeleteFilterQuery } from './sql-builder';
-import type { IndexConfig, IndexType } from './types';
+import type { IndexConfig, IndexType, VectorType, DistanceMetric } from './types';
 
 export interface PGIndexStats extends IndexStats {
   type: IndexType;
+  vectorType?: VectorType; // Storage type (vector, halfvec, bit, sparsevec)
   config: {
     m?: number;
     efConstruction?: number;
@@ -55,7 +56,7 @@ interface PgCreateIndexParams extends CreateIndexParams {
 
 interface PgDefineIndexParams {
   indexName: string;
-  metric: 'cosine' | 'euclidean' | 'dotproduct';
+  metric: 'cosine' | 'euclidean' | 'dotproduct' | 'hamming' | 'jaccard';
   indexConfig: IndexConfig;
 }
 
@@ -222,6 +223,90 @@ export class PgVector extends MastraVector<PGVectorFilter> {
 
   private getSchemaName() {
     return this.schema ? `"${parseSqlIdentifier(this.schema, 'schema name')}"` : undefined;
+  }
+
+  /**
+   * Validates that the vector type and metric combination is valid
+   */
+  private validateVectorTypeAndMetric(
+    vectorType: VectorType,
+    metric: 'cosine' | 'euclidean' | 'dotproduct' | 'hamming' | 'jaccard',
+    indexType: IndexType,
+  ): void {
+    // bit vectors only support hamming and jaccard
+    if (vectorType === 'bit') {
+      if (metric !== 'hamming' && metric !== 'jaccard') {
+        throw new Error(`bit vectors only support hamming and jaccard distance metrics, got: ${metric}`);
+      }
+      // IVFFlat only supports hamming for bit vectors
+      if (indexType === 'ivfflat' && metric !== 'hamming') {
+        throw new Error(`IVFFlat index only supports hamming distance for bit vectors, got: ${metric}`);
+      }
+    }
+
+    // sparsevec supports L2, cosine, and inner product (same as vector)
+    if (vectorType === 'sparsevec') {
+      if (metric !== 'cosine' && metric !== 'euclidean' && metric !== 'dotproduct') {
+        throw new Error(`sparsevec only supports cosine, euclidean, and dotproduct metrics, got: ${metric}`);
+      }
+      // IVFFlat does not support sparsevec
+      if (indexType === 'ivfflat') {
+        throw new Error(`IVFFlat index does not support sparsevec vectors`);
+      }
+    }
+
+    // vector and halfvec only support standard metrics
+    if ((vectorType === 'vector' || vectorType === 'halfvec') && (metric === 'hamming' || metric === 'jaccard')) {
+      throw new Error(`${vectorType} vectors do not support ${metric} distance metric`);
+    }
+  }
+
+  /**
+   * Validates dimension/element limits for different vector types
+   */
+  private validateDimensionLimits(vectorType: VectorType, dimension: number, indexType: IndexType): void {
+    if (vectorType === 'bit') {
+      // bit vectors can have up to 64,000 dimensions for indexes
+      if (indexType !== 'flat' && dimension > 64000) {
+        throw new Error(`bit vectors with indexes can have at most 64,000 dimensions, got: ${dimension}`);
+      }
+    }
+
+    if (vectorType === 'sparsevec') {
+      // sparsevec can have up to 1,000 non-zero elements for indexes
+      // Note: dimension here represents the max non-zero elements for sparse vectors
+      if (indexType !== 'flat' && dimension > 1000) {
+        throw new Error(
+          `sparsevec with indexes can have at most 1,000 non-zero elements, got: ${dimension}. Use flat index for larger sparse vectors.`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Gets the operator class for a given vector type and metric
+   */
+  private getOperatorClass(
+    vectorType: VectorType,
+    metric: 'cosine' | 'euclidean' | 'dotproduct' | 'hamming' | 'jaccard',
+  ): string {
+    if (vectorType === 'bit') {
+      if (metric === 'hamming') return 'bit_hamming_ops';
+      if (metric === 'jaccard') return 'bit_jaccard_ops';
+    }
+
+    if (vectorType === 'sparsevec') {
+      if (metric === 'cosine') return 'sparsevec_cosine_ops';
+      if (metric === 'euclidean') return 'sparsevec_l2_ops';
+      if (metric === 'dotproduct') return 'sparsevec_ip_ops';
+    }
+
+    // vector and halfvec use the same operator classes
+    if (metric === 'cosine') return 'vector_cosine_ops';
+    if (metric === 'euclidean') return 'vector_l2_ops';
+    if (metric === 'dotproduct') return 'vector_ip_ops';
+
+    throw new Error(`Unsupported combination: vectorType=${vectorType}, metric=${metric}`);
   }
 
   transformFilter(filter?: PGVectorFilter) {
@@ -490,7 +575,7 @@ export class PgVector extends MastraVector<PGVectorFilter> {
               this.logger.error(`Failed to create schema "${this.schema}"`, { error });
               throw new Error(
                 `Unable to create schema "${this.schema}". This requires CREATE privilege on the database. ` +
-                  `Either create the schema manually or grant CREATE privilege to the user.`,
+                `Either create the schema manually or grant CREATE privilege to the user.`,
               );
             }
           }
@@ -579,14 +664,29 @@ export class PgVector extends MastraVector<PGVectorFilter> {
             await client.query(`SET search_path TO ${this.getSchemaName()}, "${this.vectorExtensionSchema}"`);
           }
 
-          // Use the properly qualified vector type
-          const vectorType = this.getVectorTypeName();
+          // Determine vector storage type (default to 'vector' for backward compatibility)
+          const vectorStorageType: VectorType = indexConfig.vectorType || 'vector';
+          const indexType = indexConfig.type || 'ivfflat';
+
+          // Validate vector type and metric combination
+          this.validateVectorTypeAndMetric(vectorStorageType, metric, indexType);
+
+          // Validate dimension limits
+          this.validateDimensionLimits(vectorStorageType, dimension, indexType);
+
+          // Get the properly qualified vector type name (e.g., "public.vector", "vector", etc.)
+          const vectorTypeQualified = this.getVectorTypeName();
+
+          // Construct the full type with storage type (e.g., "vector(3)", "bit(128)", "sparsevec(1000)")
+          const fullVectorType = vectorStorageType === 'vector'
+            ? `${vectorTypeQualified}(${dimension})`
+            : `${vectorTypeQualified.replace('vector', vectorStorageType)}(${dimension})`;
 
           await client.query(`
           CREATE TABLE IF NOT EXISTS ${tableName} (
             id SERIAL PRIMARY KEY,
             vector_id TEXT UNIQUE NOT NULL,
-            embedding ${vectorType}(${dimension}),
+            embedding ${fullVectorType},
             metadata JSONB DEFAULT '{}'::jsonb
           );
         `);
@@ -722,8 +822,11 @@ export class PgVector extends MastraVector<PGVectorFilter> {
         return;
       }
 
-      const metricOp =
-        metric === 'cosine' ? 'vector_cosine_ops' : metric === 'euclidean' ? 'vector_l2_ops' : 'vector_ip_ops';
+      // Determine vector storage type
+      const vectorStorageType: VectorType = indexConfig.vectorType || 'vector';
+
+      // Get the appropriate operator class for this vector type and metric
+      const metricOp = this.getOperatorClass(vectorStorageType, metric);
 
       let indexSQL: string;
       if (indexType === 'hnsw') {
@@ -809,7 +912,7 @@ export class PgVector extends MastraVector<PGVectorFilter> {
           } catch (error) {
             this.logger.warn(
               'Could not install vector extension. This requires superuser privileges. ' +
-                'If the extension is already installed, you can ignore this warning.',
+              'If the extension is already installed, you can ignore this warning.',
               { error },
             );
 
@@ -898,13 +1001,13 @@ export class PgVector extends MastraVector<PGVectorFilter> {
     try {
       const { tableName } = this.getTableName(indexName);
 
-      // Check if table exists with a vector column
+      // Check if table exists with a vector-related column
       const tableExistsQuery = `
         SELECT 1
         FROM information_schema.columns
         WHERE table_schema = $1
           AND table_name = $2
-          AND udt_name = 'vector'
+          AND column_name = 'embedding'
         LIMIT 1;
       `;
       const tableExists = await client.query(tableExistsQuery, [this.schema || 'public', indexName]);
@@ -913,13 +1016,16 @@ export class PgVector extends MastraVector<PGVectorFilter> {
         throw new Error(`Vector table ${tableName} does not exist`);
       }
 
-      // Get vector dimension
+      // Get vector dimension and type
       const dimensionQuery = `
-                SELECT atttypmod as dimension
-                FROM pg_attribute
-                WHERE attrelid = $1::regclass
-                AND attname = 'embedding';
-            `;
+        SELECT 
+          atttypmod as dimension,
+          t.typname as type_name
+        FROM pg_attribute a
+        JOIN pg_type t ON a.atttypid = t.oid
+        WHERE attrelid = $1::regclass
+        AND attname = 'embedding';
+      `;
 
       // Get row count
       const countQuery = `
@@ -954,12 +1060,23 @@ export class PgVector extends MastraVector<PGVectorFilter> {
         operator_class: 'cosine',
       };
 
-      // Convert pg_vector index method to our metric type
-      const metric = operator_class.includes('l2')
-        ? 'euclidean'
-        : operator_class.includes('ip')
-          ? 'dotproduct'
-          : 'cosine';
+      // Detect vector storage type from pg_type
+      const vectorStorageType: VectorType = (dimResult.rows[0].type_name as VectorType) || 'vector';
+
+      // Convert pg_vector operator class to our metric type
+      let metric: 'cosine' | 'euclidean' | 'dotproduct' | 'hamming' | 'jaccard';
+
+      if (operator_class.includes('hamming')) {
+        metric = 'hamming';
+      } else if (operator_class.includes('jaccard')) {
+        metric = 'jaccard';
+      } else if (operator_class.includes('l2')) {
+        metric = 'euclidean';
+      } else if (operator_class.includes('ip')) {
+        metric = 'dotproduct';
+      } else {
+        metric = 'cosine';
+      }
 
       // Parse index configuration
       const config: { m?: number; efConstruction?: number; lists?: number } = {};
@@ -979,6 +1096,7 @@ export class PgVector extends MastraVector<PGVectorFilter> {
         count: parseInt(countResult.rows[0].count),
         metric,
         type: index_method as 'flat' | 'hnsw' | 'ivfflat',
+        vectorType: vectorStorageType,
         config,
       };
     } catch (e: any) {

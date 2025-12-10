@@ -25,7 +25,7 @@ describe('PgVector', () => {
     afterAll(async () => {
       try {
         await testDB.disconnect();
-      } catch {}
+      } catch { }
     });
     it('should expose pool field as public', () => {
       expect(testDB.pool).toBeDefined();
@@ -184,7 +184,7 @@ describe('PgVector', () => {
         // Clean up from previous test since they share the same index name
         try {
           await vectorDB.deleteIndex({ indexName: testIndexName2 });
-        } catch {}
+        } catch { }
 
         await vectorDB.createIndex({
           indexName: testIndexName2,
@@ -228,13 +228,13 @@ describe('PgVector', () => {
         // Clean up any existing index
         try {
           await vectorDB.deleteIndex({ indexName: testRecreateIndex });
-        } catch {}
+        } catch { }
       });
 
       afterAll(async () => {
         try {
           await vectorDB.deleteIndex({ indexName: testRecreateIndex });
-        } catch {}
+        } catch { }
       });
 
       it('should not recreate index if configuration matches', async () => {
@@ -743,7 +743,7 @@ describe('PgVector', () => {
         const vectors = [[1, 2, 3, 4]]; // 4D vector for 3D index
         await expect(vectorDB.upsert({ indexName: testIndexName, vectors })).rejects.toThrow(
           `Vector dimension mismatch: Index "${testIndexName}" expects 3 dimensions but got 4 dimensions. ` +
-            `Either use a matching embedding model or delete and recreate the index with the new dimension.`,
+          `Either use a matching embedding model or delete and recreate the index with the new dimension.`,
         );
       });
     });
@@ -3679,6 +3679,350 @@ describe('Validation', () => {
       } finally {
         await db.disconnect();
       }
+    });
+  });
+});
+
+// Tests for bit and sparsevec vector types (pgvector 0.7.0+)
+describe('PgVector - Bit and Sparsevec Support', () => {
+  let vectorDB: PgVector;
+  const connectionString = process.env.DB_URL || 'postgresql://postgres:postgres@localhost:5434/mastra';
+
+  beforeAll(async () => {
+    vectorDB = new PgVector({ connectionString, id: 'pg-vector-bit-sparsevec-test' });
+  });
+
+  afterAll(async () => {
+    await vectorDB.disconnect();
+  });
+
+  describe('Bit Vector Type', () => {
+    const bitIndexName = 'test_bit_vectors';
+
+    afterEach(async () => {
+      try {
+        await vectorDB.deleteIndex({ indexName: bitIndexName });
+      } catch { }
+    });
+
+    it('should create index with bit vector type and hamming distance', async () => {
+      await vectorDB.createIndex({
+        indexName: bitIndexName,
+        dimension: 128,
+        metric: 'hamming',
+        indexConfig: {
+          type: 'hnsw',
+          vectorType: 'bit',
+          hnsw: { m: 16, efConstruction: 64 },
+        },
+      });
+
+      const stats = await vectorDB.describeIndex({ indexName: bitIndexName });
+      expect(stats.vectorType).toBe('bit');
+      expect(stats.metric).toBe('hamming');
+      expect(stats.type).toBe('hnsw');
+    });
+
+    it('should create index with bit vector type and jaccard distance', async () => {
+      await vectorDB.createIndex({
+        indexName: bitIndexName,
+        dimension: 256,
+        metric: 'jaccard',
+        indexConfig: {
+          type: 'hnsw',
+          vectorType: 'bit',
+          hnsw: { m: 16, efConstruction: 64 },
+        },
+      });
+
+      const stats = await vectorDB.describeIndex({ indexName: bitIndexName });
+      expect(stats.vectorType).toBe('bit');
+      expect(stats.metric).toBe('jaccard');
+      expect(stats.type).toBe('hnsw');
+    });
+
+    it('should create IVFFlat index with bit vectors and hamming distance', async () => {
+      await vectorDB.createIndex({
+        indexName: bitIndexName,
+        dimension: 128,
+        metric: 'hamming',
+        indexConfig: {
+          type: 'ivfflat',
+          vectorType: 'bit',
+          ivf: { lists: 100 },
+        },
+      });
+
+      const stats = await vectorDB.describeIndex({ indexName: bitIndexName });
+      expect(stats.vectorType).toBe('bit');
+      expect(stats.metric).toBe('hamming');
+      expect(stats.type).toBe('ivfflat');
+    });
+
+    it('should throw error when using IVFFlat with bit vectors and jaccard distance', async () => {
+      await expect(
+        vectorDB.createIndex({
+          indexName: bitIndexName,
+          dimension: 128,
+          metric: 'jaccard',
+          indexConfig: {
+            type: 'ivfflat',
+            vectorType: 'bit',
+            ivf: { lists: 100 },
+          },
+        }),
+      ).rejects.toThrow('IVFFlat index only supports hamming distance for bit vectors');
+    });
+
+    it('should throw error when using bit vectors with cosine metric', async () => {
+      await expect(
+        vectorDB.createIndex({
+          indexName: bitIndexName,
+          dimension: 128,
+          metric: 'cosine',
+          indexConfig: {
+            type: 'hnsw',
+            vectorType: 'bit',
+          },
+        }),
+      ).rejects.toThrow('bit vectors only support hamming and jaccard distance metrics');
+    });
+
+    it('should enforce dimension limit for bit vectors with indexes', async () => {
+      await expect(
+        vectorDB.createIndex({
+          indexName: bitIndexName,
+          dimension: 65000, // Exceeds 64,000 limit
+          metric: 'hamming',
+          indexConfig: {
+            type: 'hnsw',
+            vectorType: 'bit',
+          },
+        }),
+      ).rejects.toThrow('bit vectors with indexes can have at most 64,000 dimensions');
+    });
+
+    it('should allow bit vectors with large dimensions for flat index', async () => {
+      // This should not throw even with large dimensions since flat index has no limit
+      await vectorDB.createIndex({
+        indexName: bitIndexName,
+        dimension: 65000,
+        metric: 'hamming',
+        indexConfig: {
+          type: 'flat',
+          vectorType: 'bit',
+        },
+      });
+
+      const stats = await vectorDB.describeIndex({ indexName: bitIndexName });
+      expect(stats.vectorType).toBe('bit');
+      expect(stats.type).toBe('flat');
+    });
+  });
+
+  describe('Sparsevec Vector Type', () => {
+    const sparseIndexName = 'test_sparse_vectors';
+
+    afterEach(async () => {
+      try {
+        await vectorDB.deleteIndex({ indexName: sparseIndexName });
+      } catch { }
+    });
+
+    it('should create index with sparsevec type and cosine distance', async () => {
+      await vectorDB.createIndex({
+        indexName: sparseIndexName,
+        dimension: 500,
+        metric: 'cosine',
+        indexConfig: {
+          type: 'hnsw',
+          vectorType: 'sparsevec',
+          hnsw: { m: 16, efConstruction: 64 },
+        },
+      });
+
+      const stats = await vectorDB.describeIndex({ indexName: sparseIndexName });
+      expect(stats.vectorType).toBe('sparsevec');
+      expect(stats.metric).toBe('cosine');
+      expect(stats.type).toBe('hnsw');
+    });
+
+    it('should create index with sparsevec type and euclidean distance', async () => {
+      await vectorDB.createIndex({
+        indexName: sparseIndexName,
+        dimension: 500,
+        metric: 'euclidean',
+        indexConfig: {
+          type: 'hnsw',
+          vectorType: 'sparsevec',
+          hnsw: { m: 16, efConstruction: 64 },
+        },
+      });
+
+      const stats = await vectorDB.describeIndex({ indexName: sparseIndexName });
+      expect(stats.vectorType).toBe('sparsevec');
+      expect(stats.metric).toBe('euclidean');
+      expect(stats.type).toBe('hnsw');
+    });
+
+    it('should create index with sparsevec type and dotproduct distance', async () => {
+      await vectorDB.createIndex({
+        indexName: sparseIndexName,
+        dimension: 500,
+        metric: 'dotproduct',
+        indexConfig: {
+          type: 'hnsw',
+          vectorType: 'sparsevec',
+          hnsw: { m: 16, efConstruction: 64 },
+        },
+      });
+
+      const stats = await vectorDB.describeIndex({ indexName: sparseIndexName });
+      expect(stats.vectorType).toBe('sparsevec');
+      expect(stats.metric).toBe('dotproduct');
+      expect(stats.type).toBe('hnsw');
+    });
+
+    it('should throw error when using IVFFlat with sparsevec', async () => {
+      await expect(
+        vectorDB.createIndex({
+          indexName: sparseIndexName,
+          dimension: 500,
+          metric: 'cosine',
+          indexConfig: {
+            type: 'ivfflat',
+            vectorType: 'sparsevec',
+            ivf: { lists: 100 },
+          },
+        }),
+      ).rejects.toThrow('IVFFlat index does not support sparsevec vectors');
+    });
+
+    it('should throw error when using sparsevec with hamming metric', async () => {
+      await expect(
+        vectorDB.createIndex({
+          indexName: sparseIndexName,
+          dimension: 500,
+          metric: 'hamming',
+          indexConfig: {
+            type: 'hnsw',
+            vectorType: 'sparsevec',
+          },
+        }),
+      ).rejects.toThrow('sparsevec only supports cosine, euclidean, and dotproduct metrics');
+    });
+
+    it('should enforce element limit for sparsevec with indexes', async () => {
+      await expect(
+        vectorDB.createIndex({
+          indexName: sparseIndexName,
+          dimension: 1500, // Exceeds 1,000 non-zero element limit
+          metric: 'cosine',
+          indexConfig: {
+            type: 'hnsw',
+            vectorType: 'sparsevec',
+          },
+        }),
+      ).rejects.toThrow('sparsevec with indexes can have at most 1,000 non-zero elements');
+    });
+
+    it('should allow sparsevec with large dimensions for flat index', async () => {
+      // This should not throw even with large dimensions since flat index has no limit
+      await vectorDB.createIndex({
+        indexName: sparseIndexName,
+        dimension: 1500,
+        metric: 'cosine',
+        indexConfig: {
+          type: 'flat',
+          vectorType: 'sparsevec',
+        },
+      });
+
+      const stats = await vectorDB.describeIndex({ indexName: sparseIndexName });
+      expect(stats.vectorType).toBe('sparsevec');
+      expect(stats.type).toBe('flat');
+    });
+  });
+
+  describe('Halfvec Vector Type', () => {
+    const halfvecIndexName = 'test_halfvec_vectors';
+
+    afterEach(async () => {
+      try {
+        await vectorDB.deleteIndex({ indexName: halfvecIndexName });
+      } catch { }
+    });
+
+    it('should create index with halfvec type and cosine distance', async () => {
+      await vectorDB.createIndex({
+        indexName: halfvecIndexName,
+        dimension: 384,
+        metric: 'cosine',
+        indexConfig: {
+          type: 'hnsw',
+          vectorType: 'halfvec',
+          hnsw: { m: 16, efConstruction: 64 },
+        },
+      });
+
+      const stats = await vectorDB.describeIndex({ indexName: halfvecIndexName });
+      expect(stats.vectorType).toBe('halfvec');
+      expect(stats.metric).toBe('cosine');
+      expect(stats.type).toBe('hnsw');
+    });
+
+    it('should throw error when using halfvec with hamming metric', async () => {
+      await expect(
+        vectorDB.createIndex({
+          indexName: halfvecIndexName,
+          dimension: 384,
+          metric: 'hamming',
+          indexConfig: {
+            type: 'hnsw',
+            vectorType: 'halfvec',
+          },
+        }),
+      ).rejects.toThrow('halfvec vectors do not support hamming distance metric');
+    });
+  });
+
+  describe('Backward Compatibility', () => {
+    const compatIndexName = 'test_compat_vectors';
+
+    afterEach(async () => {
+      try {
+        await vectorDB.deleteIndex({ indexName: compatIndexName });
+      } catch { }
+    });
+
+    it('should default to vector type when vectorType is not specified', async () => {
+      await vectorDB.createIndex({
+        indexName: compatIndexName,
+        dimension: 128,
+        metric: 'cosine',
+        indexConfig: {
+          type: 'hnsw',
+          hnsw: { m: 16, efConstruction: 64 },
+        },
+      });
+
+      const stats = await vectorDB.describeIndex({ indexName: compatIndexName });
+      expect(stats.vectorType).toBe('vector');
+      expect(stats.metric).toBe('cosine');
+    });
+
+    it('should work with existing code that does not specify vectorType', async () => {
+      // This mimics existing usage patterns
+      await vectorDB.createIndex({
+        indexName: compatIndexName,
+        dimension: 256,
+        metric: 'euclidean',
+      });
+
+      const stats = await vectorDB.describeIndex({ indexName: compatIndexName });
+      expect(stats.dimension).toBe(256);
+      expect(stats.metric).toBe('euclidean');
+      expect(stats.vectorType).toBe('vector'); // Should default to 'vector'
     });
   });
 });
