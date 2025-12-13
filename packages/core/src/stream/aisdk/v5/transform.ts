@@ -137,12 +137,19 @@ export function convertFullStreamChunkToMastra(value: StreamPart, ctx: { runId: 
         try {
           toolCallInput = JSON.parse(value.input);
         } catch (error) {
-          console.error('Error converting tool call input to JSON', {
-            error,
-            input: value.input,
-          });
-          toolCallInput = undefined;
-        }
+            return {
+              type: 'error',
+              runId: ctx.runId,
+              from: ChunkFrom.AGENT,
+              payload: {
+                error: new Error(
+                  `Invalid JSON in tool call arguments for tool "${value.toolName}". ` +
+                  `Ensure all keys and strings use double quotes. ` +
+                  `Received: ${value.input}`
+                ),
+              },
+            };
+          }
       }
 
       return {
