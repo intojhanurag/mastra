@@ -193,6 +193,100 @@ The `suspended` array contains the IDs of any suspended workflows and steps from
 [ 'nested-workflow', 'step-1' ]
 ```
 
+## Suspending and resuming nested workflows
+
+A [nested workflow](/docs/workflows/overview#workflows-as-steps) (a workflow used as a step within another workflow) can also be suspended. When a nested workflow suspends, the entire parent workflow's execution is paused at that point. The suspension behavior follows these key principles:
+
+1. **Nested workflows can suspend** - Any step within a nested workflow can call `suspend()`, including steps inside deeply nested hierarchies
+2. **Parent workflow pauses automatically** - When a nested workflow suspends, the parent workflow's status becomes `'suspended'`
+3. **Always resume the parent workflow** - You cannot resume a nested workflow directly. Call `resume()` on the parent workflow's run instance
+4. **Mastra resumes child workflows automatically** - When you resume the parent workflow, the nested workflow resumes from where it left off
+5. **Parent continues after child completes** - Once the nested workflow finishes executing, the parent workflow continues normally
+
+### Identifying suspended nested workflows
+
+When checking for suspended executions that include nested workflows, the `suspended` array will contain the nested workflow's ID. You can use this to determine which workflow needs to be resumed.
+
+```typescript
+const result = await run.start({ inputData: { startValue: 0 } });
+
+if (result.status === "suspended") {
+  // The suspended array contains the nested workflow ID
+  console.log(result.suspended);
+  // Output: [ 'nested-workflow-a' ]
+}
+```
+
+### Resuming a suspended nested workflow
+
+To resume a suspended nested workflow, call `resume()` on the parent workflow's run instance. Use an array reference to specify the nested workflow step path.
+
+```typescript
+// Parent workflow run that was suspended because nested workflow suspended
+const run = await parentWorkflow.createRun({ runId: existingRunId });
+
+// Resume using an array reference [parentWorkflow, nestedStep]
+// This tells Mastra to resume the nested workflow within the parent context
+const result = await run.resume({
+  step: [nestedWorkflow, suspendedStep],
+  resumeData: { /* resume data for the nested step */ }
+});
+```
+
+After resuming, the nested workflow continues from where it was suspended. Once the nested workflow completes, the parent workflow proceeds with any remaining steps.
+
+### Example: Parent and nested workflow suspension
+
+```typescript title="src/mastra/workflows/nested-workflow.ts"
+// Define the nested workflow that can suspend
+const nestedWorkflow = createWorkflow({
+  id: "nested-workflow-a",
+  inputSchema: z.object({ startValue: z.number() }),
+  outputSchema: z.object({ finalValue: z.number() }),
+})
+  .then(startStep)
+  .then(otherStep)  // This step will suspend
+  .then(finalStep)
+  .commit();
+
+// Define the parent workflow
+const parentWorkflow = createWorkflow({
+  id: "parent-workflow",
+  inputSchema: z.object({ startValue: z.number() }),
+  outputSchema: z.object({ success: z.boolean() }),
+})
+  .then(beginStep)
+  .then(nestedWorkflow)  // Includes the nested workflow
+  .then(lastStep)
+  .commit();
+
+// --- Execution flow ---
+
+const mastra = new Mastra({ workflows: { parentWorkflow, "nested-workflow-a": nestedWorkflow } });
+const run = await parentWorkflow.createRun();
+
+// Start the workflow
+const result = await run.start({ inputData: { startValue: 0 } });
+
+// The nested workflow's step suspended, so parent is now suspended
+console.log(result.status); // "suspended"
+console.log(result.suspended); // [ 'nested-workflow-a' ]
+
+// Resume from the parent workflow's perspective
+// Use [nestedWorkflow, otherStep] to target the suspended step inside nested workflow
+const resumed = await run.resume({
+  step: [nestedWorkflow, otherStep],
+  resumeData: { newValue: 0 }
+});
+
+// After resuming:
+// 1. The nested workflow continues from the suspended step
+// 2. finalStep executes within nested workflow
+// 3. Control returns to parent workflow
+// 4. lastStep executes
+console.log(resumed.status); // "success"
+```
+
 ## Sleep
 
 Sleep methods can be used to pause execution at the workflow level, which sets the status to `waiting`. By comparison, `suspend()` pauses execution within a specific step and sets the status to `suspended`.
