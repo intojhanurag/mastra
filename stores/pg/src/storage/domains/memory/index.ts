@@ -689,6 +689,18 @@ export class MemoryPG extends MemoryStorage {
         queryParams.push(filter.dateRange.end);
       }
 
+      // Metadata filtering: Query JSONB content->'metadata' field
+      // Uses PostgreSQL's JSONB containment operator (@>) for safe parameterized queries
+      // This prevents SQL injection by avoiding direct key interpolation in SQL string
+      if (filter?.metadata && Object.keys(filter.metadata).length > 0) {
+        for (const [key, value] of Object.entries(filter.metadata)) {
+          // Use JSONB containment operator - no key interpolation needed
+          conditions.push(`content::jsonb @> $${paramIndex++}::jsonb`);
+          // Build a small JSON object for each key-value pair nested under 'metadata'
+          queryParams.push(JSON.stringify({ metadata: { [key]: value } }));
+        }
+      }
+
       const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
       const countQuery = `SELECT COUNT(*) FROM ${tableName} ${whereClause}`;
@@ -960,11 +972,11 @@ export class MemoryPG extends MemoryStorage {
             ...updatableFields.content,
             ...(existingMessage.content?.metadata && updatableFields.content.metadata
               ? {
-                  metadata: {
-                    ...existingMessage.content.metadata,
-                    ...updatableFields.content.metadata,
-                  },
-                }
+                metadata: {
+                  ...existingMessage.content.metadata,
+                  ...updatableFields.content.metadata,
+                },
+              }
               : {}),
           };
           setClauses.push(`content = $${paramIndex++}`);
