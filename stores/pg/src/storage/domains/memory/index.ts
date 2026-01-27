@@ -972,11 +972,11 @@ export class MemoryPG extends MemoryStorage {
             ...updatableFields.content,
             ...(existingMessage.content?.metadata && updatableFields.content.metadata
               ? {
-                metadata: {
-                  ...existingMessage.content.metadata,
-                  ...updatableFields.content.metadata,
-                },
-              }
+                  metadata: {
+                    ...existingMessage.content.metadata,
+                    ...updatableFields.content.metadata,
+                  },
+                }
               : {}),
           };
           setClauses.push(`content = $${paramIndex++}`);
