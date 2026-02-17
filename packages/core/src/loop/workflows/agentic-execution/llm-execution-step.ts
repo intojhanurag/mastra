@@ -15,6 +15,7 @@ import { executeWithContextSync } from '../../../observability';
 import type { ProcessorStreamWriter } from '../../../processors/index';
 import { PrepareStepProcessor } from '../../../processors/processors/prepare-step';
 import { ProcessorRunner } from '../../../processors/runner';
+import { RequestContext } from '../../../request-context';
 import { execute } from '../../../stream/aisdk/v5/execute';
 import { DefaultStepResult } from '../../../stream/aisdk/v5/output-helpers';
 import { MastraModelOutput } from '../../../stream/base/output';
@@ -25,6 +26,7 @@ import type {
   TextStartPayload,
 } from '../../../stream/types';
 import { ChunkFrom } from '../../../stream/types';
+import { makeCoreTool, createMastraProxy } from '../../../utils';
 import { createStep } from '../../../workflows';
 import type { Workspace } from '../../../workspace/workspace';
 import type { LoopConfig, OuterLLMRun } from '../../types';
@@ -529,6 +531,8 @@ export function createLLMExecutionStep<TOOLS extends ToolSet = ToolSet, OUTPUT =
   maxProcessorRetries,
   workspace,
   outputWriter,
+  mastra,
+  agentName,
 }: OuterLLMRun<TOOLS, OUTPUT>) {
   const initialSystemMessages = messageList.getAllSystemMessages();
 
@@ -630,6 +634,37 @@ export function createLLMExecutionStep<TOOLS extends ToolSet = ToolSet, OUTPUT =
               abortSignal: options?.abortSignal,
             });
             Object.assign(currentStep, processInputStepResult);
+
+            // Convert raw Mastra tools (ToolAction from createTool) returned by processors
+            // to CoreTools so they receive requestContext, mastra, memory, etc. during execution.
+            // Without this, processor-returned tools bypass CoreToolBuilder and miss context injection.
+            if (processInputStepResult.tools && currentStep.tools) {
+              const effectiveLogger = logger || new ConsoleLogger({ level: 'error' });
+              const mastraProxy = mastra ? createMastraProxy({ mastra, logger: effectiveLogger }) : undefined;
+
+              for (const [toolName, tool] of Object.entries(currentStep.tools)) {
+                if (tool && typeof tool === 'object' && 'inputSchema' in tool && !('parameters' in tool)) {
+                  (currentStep.tools as Record<string, unknown>)[toolName] = makeCoreTool(
+                    tool as any,
+                    {
+                      name: toolName,
+                      runId,
+                      threadId: _internal?.threadId,
+                      resourceId: _internal?.resourceId,
+                      logger: effectiveLogger,
+                      mastra: mastraProxy,
+                      memory: _internal?.memory,
+                      agentName: agentName || agentId,
+                      requestContext: requestContext ?? new RequestContext(),
+                      model,
+                      outputWriter,
+                    },
+                    undefined,
+                    autoResumeSuspendedTools,
+                  );
+                }
+              }
+            }
           } catch (error) {
             // Handle TripWire from processInputStep - emit tripwire chunk and signal abort
             if (error instanceof TripWire) {
