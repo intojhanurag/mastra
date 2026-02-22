@@ -98,6 +98,22 @@ export function extractUsageMetrics(usage?: LanguageModelUsage, providerMetadata
     }
   }
 
+  // ===== Aggregated values override =====
+  // In multi-step runs, usage contains properly aggregated totals while
+  // providerMetadata only reflects the last step. Prefer aggregated values.
+  if (usage.cachedInputTokens != null) {
+    inputDetails.cacheRead = usage.cachedInputTokens;
+  }
+  if (usage.cachedWriteInputTokens != null) {
+    inputDetails.cacheWrite = usage.cachedWriteInputTokens;
+  }
+
+  // Recalculate Anthropic inputTokens using the resolved (possibly aggregated) cache values
+  if (anthropic && (inputDetails.cacheRead || inputDetails.cacheWrite)) {
+    inputDetails.text = usage.inputTokens;
+    inputTokens = (usage.inputTokens ?? 0) + (inputDetails.cacheRead ?? 0) + (inputDetails.cacheWrite ?? 0);
+  }
+
   // Build the final UsageStats object
   const result: UsageStats = {
     inputTokens,

@@ -8,6 +8,7 @@ export class MastraAgentNetworkStream<OUTPUT = undefined> extends ReadableStream
     outputTokens: 0,
     totalTokens: 0,
     cachedInputTokens: 0,
+    cachedWriteInputTokens: 0,
     reasoningTokens: 0,
   };
   #streamPromise: {
@@ -70,12 +71,17 @@ export class MastraAgentNetworkStream<OUTPUT = undefined> extends ReadableStream
       totalTokens?: `${number}` | number;
       reasoningTokens?: `${number}` | number;
       cachedInputTokens?: `${number}` | number;
+      cachedWriteInputTokens?: `${number}` | number;
     }) => {
       this.#usageCount.inputTokens += parseInt(usage?.inputTokens?.toString() ?? '0', 10);
       this.#usageCount.outputTokens += parseInt(usage?.outputTokens?.toString() ?? '0', 10);
       this.#usageCount.totalTokens += parseInt(usage?.totalTokens?.toString() ?? '0', 10);
       this.#usageCount.reasoningTokens += parseInt(usage?.reasoningTokens?.toString() ?? '0', 10);
       this.#usageCount.cachedInputTokens += parseInt(usage?.cachedInputTokens?.toString() ?? '0', 10);
+      this.#usageCount.cachedWriteInputTokens += parseInt(
+        (usage as { cachedWriteInputTokens?: `${number}` | number })?.cachedWriteInputTokens?.toString() ?? '0',
+        10,
+      );
     };
 
     super({

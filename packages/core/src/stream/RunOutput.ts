@@ -14,11 +14,12 @@ export class WorkflowRunOutput<
 > implements MastraBaseStream<WorkflowStreamEvent> {
   #status: WorkflowRunStatus = 'running';
   #tripwireData: StepTripwireData | undefined;
-  #usageCount: Required<LanguageModelUsage> = {
+  #usageCount = {
     inputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
     cachedInputTokens: 0,
+    cachedWriteInputTokens: 0,
     reasoningTokens: 0,
   };
   #consumptionStarted = false;
@@ -169,6 +170,7 @@ export class WorkflowRunOutput<
           totalTokens?: `${number}` | number;
           reasoningTokens?: `${number}` | number;
           cachedInputTokens?: `${number}` | number;
+          cachedWriteInputTokens?: `${number}` | number;
         }
       | {
           promptTokens?: `${number}` | number;
@@ -176,6 +178,7 @@ export class WorkflowRunOutput<
           totalTokens?: `${number}` | number;
           reasoningTokens?: `${number}` | number;
           cachedInputTokens?: `${number}` | number;
+          cachedWriteInputTokens?: `${number}` | number;
         },
   ) {
     let totalUsage = {
@@ -184,6 +187,7 @@ export class WorkflowRunOutput<
       totalTokens: this.#usageCount.totalTokens ?? 0,
       reasoningTokens: this.#usageCount.reasoningTokens ?? 0,
       cachedInputTokens: this.#usageCount.cachedInputTokens ?? 0,
+      cachedWriteInputTokens: this.#usageCount.cachedWriteInputTokens ?? 0,
     };
     if ('inputTokens' in usage) {
       totalUsage.inputTokens += parseInt(usage?.inputTokens?.toString() ?? '0', 10);
@@ -197,6 +201,10 @@ export class WorkflowRunOutput<
 
     totalUsage.reasoningTokens += parseInt(usage?.reasoningTokens?.toString() ?? '0', 10);
     totalUsage.cachedInputTokens += parseInt(usage?.cachedInputTokens?.toString() ?? '0', 10);
+    totalUsage.cachedWriteInputTokens += parseInt(
+      (usage as { cachedWriteInputTokens?: `${number}` | number })?.cachedWriteInputTokens?.toString() ?? '0',
+      10,
+    );
     this.#usageCount = totalUsage;
   }
 
