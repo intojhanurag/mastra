@@ -157,7 +157,7 @@ When `MASTRA_API_TOKEN` is set, the CLI runs in headless mode and skips all inte
 
 ### Deploy Server on push to main
 
-Server deploy accepts org and project from `.mastra-project.json`, so no extra env vars are needed beyond the token:
+Both Server and Studio deploy require `MASTRA_ORG_ID` and `MASTRA_PROJECT_ID` as env vars in headless mode, because API tokens cannot list organizations:
 
 ```yaml title=".github/workflows/deploy-server.yml"
 name: Deploy to Mastra Server
@@ -176,14 +176,14 @@ jobs:
         with:
           node-version: '22'
       - run: pnpm install
-      - run: pnpm mastra server deploy --yes --config .mastra-project.json
+      - run: pnpm mastra server deploy --yes
         env:
           MASTRA_API_TOKEN: ${{ secrets.MASTRA_API_TOKEN }}
+          MASTRA_ORG_ID: ${{ secrets.MASTRA_ORG_ID }}
+          MASTRA_PROJECT_ID: ${{ secrets.MASTRA_PROJECT_ID }}
 ```
 
 ### Deploy Studio on push to main
-
-Studio deploy requires `MASTRA_ORG_ID` and `MASTRA_PROJECT_ID` as env vars in headless mode, even when `--config` is provided:
 
 ```yaml title=".github/workflows/deploy-studio.yml"
 name: Deploy to Mastra Studio
@@ -202,7 +202,7 @@ jobs:
         with:
           node-version: '22'
       - run: pnpm install
-      - run: pnpm mastra studio deploy --yes --config .mastra-project.json
+      - run: pnpm mastra studio deploy --yes
         env:
           MASTRA_API_TOKEN: ${{ secrets.MASTRA_API_TOKEN }}
           MASTRA_ORG_ID: ${{ secrets.MASTRA_ORG_ID }}

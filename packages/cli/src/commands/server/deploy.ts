@@ -233,12 +233,12 @@ export async function serverDeployAction(
   // Step 2: Load existing project config
   const projectConfig = await loadProjectConfig(targetDir, opts.config);
 
-  // Step 3: Resolve org — flags and config are checked before requiring env vars
-  const hasOrg = Boolean(process.env.MASTRA_ORG_ID || opts.org || projectConfig?.organizationId);
-  const hasProject = Boolean(process.env.MASTRA_PROJECT_ID || opts.project || projectConfig?.projectId);
+  // Step 3: Headless mode requires env vars or flags (API tokens cannot list orgs, so .mastra-project.json alone is not enough)
+  const hasOrg = Boolean(process.env.MASTRA_ORG_ID || opts.org);
+  const hasProject = Boolean(process.env.MASTRA_PROJECT_ID || opts.project);
   if (isHeadless && (!hasOrg || !hasProject)) {
     throw new Error(
-      'MASTRA_ORG_ID and MASTRA_PROJECT_ID (or --org/--project flags, or .mastra-project.json) are required when MASTRA_API_TOKEN is set',
+      'MASTRA_ORG_ID and MASTRA_PROJECT_ID (or --org/--project flags) are required when MASTRA_API_TOKEN is set',
     );
   }
 
