@@ -177,6 +177,7 @@ export class PostgresStore extends MastraCompositeStore {
   #pool: Pool;
   #db: DbClient;
   #ownsPool: boolean;
+  #poolClosed: boolean = false;
   private schema: string;
   private isInitialized: boolean = false;
 
@@ -302,9 +303,11 @@ export class PostgresStore extends MastraCompositeStore {
   /**
    * Closes the connection pool if it was created by this store.
    * If a pool was passed in via config, it will not be closed.
+   * Safe to call multiple times — subsequent calls are no-ops.
    */
   async close(): Promise<void> {
-    if (this.#ownsPool) {
+    if (this.#ownsPool && !this.#poolClosed) {
+      this.#poolClosed = true;
       await this.#pool.end();
     }
   }
@@ -417,6 +420,7 @@ const COLLISION_WARNING =
 export class PostgresStoreVNext extends PostgresStore {
   #observabilityPool?: Pool;
   #ownsObservabilityPool = false;
+  #observabilityPoolClosed = false;
 
   constructor(
     config: PostgresStoreConfig & {
@@ -433,7 +437,7 @@ export class PostgresStoreVNext extends PostgresStore {
 
     const obsConfig = config.observability;
     if (isSameConnectionTarget(config, obsConfig)) {
-      this.logger.warn(COLLISION_WARNING);
+      console.warn(COLLISION_WARNING);
     }
     const built = this.#createObservabilityClient(obsConfig);
     const observabilityClient = built.client;
@@ -482,11 +486,12 @@ export class PostgresStoreVNext extends PostgresStore {
 
   /**
    * Closes both the primary pool (when owned) and the observability pool
-   * (when this store created it).
+   * (when this store created it). Safe to call multiple times.
    */
   override async close(): Promise<void> {
     await super.close();
-    if (this.#ownsObservabilityPool && this.#observabilityPool) {
+    if (this.#ownsObservabilityPool && this.#observabilityPool && !this.#observabilityPoolClosed) {
+      this.#observabilityPoolClosed = true;
       await this.#observabilityPool.end();
     }
   }
